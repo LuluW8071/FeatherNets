@@ -1,21 +1,22 @@
 import os
+import numpy as np
+import albumentations as A
+
 from PIL import Image
 from torch.utils.data import Dataset
-import torchvision.transforms as transforms
-import numpy as np
-
 
 class CelebASpoofDataset(Dataset):
+    """
+    Dataset for CelebA-Spoof.
+
+    Returns:
+        image: Tensor (after Albumentations ToTensorV2)
+        label: int (0=spoof, 1=live)
+    """
     def __init__(self, data_dir, label_file, transform=None):
-        """
-        Args:
-            data_dir (str): Base directory containing image files.
-            label_file (str): Path to the label file.
-            transform: PyTorch transform to apply on the cropped face image.
-        """
         self.data_dir = data_dir
         self.transform = transform
-        self.samples = []  # (image_path, label, bbox)
+        self.samples = []  # List of tuples (img_path, label, bbox)
 
         with open(label_file, "r") as f:
             for line in f:
@@ -41,15 +42,27 @@ class CelebASpoofDataset(Dataset):
     def __getitem__(self, idx):
         img_path, label, bbox = self.samples[idx]
 
+        # Load image
         image = Image.open(img_path).convert("RGB")
-        image_np = np.array(image)
+        image_np = np.array(image)  # HWC
+
+        # Crop face safely
         cropped_np = self._crop_face(image_np, bbox)
-        cropped = Image.fromarray(cropped_np)
 
+        # Handle empty crops
+        if cropped_np.size == 0 or cropped_np.shape[0] == 0 or cropped_np.shape[1] == 0:
+            # fallback: use full image
+            cropped_np = image_np
+
+        # Apply transform
         if self.transform:
-            cropped = self.transform(cropped)
+            if isinstance(self.transform, A.Compose):
+                augmented = self.transform(image=cropped_np)
+                cropped_np = augmented['image']
+            else:  # torchvision transforms
+                cropped_np = self.transform(Image.fromarray(cropped_np))
 
-        return cropped, label
+        return cropped_np, label
 
     def _read_bbox(self, bb_path):
         """Read bounding box from _BB.txt file."""
@@ -63,21 +76,26 @@ class CelebASpoofDataset(Dataset):
         return min(max(x, min_x), max_x)
 
     def _crop_face(self, img_np, bbox):
-        """Crop face from numpy array using bounding box, safely clamped."""
-        if len(img_np.shape) == 2:
-            real_h, real_w = img_np.shape
-        else:
-            real_h, real_w, _ = img_np.shape
+        h, w = img_np.shape[:2]
 
-        x1 = self._clamp(int(bbox[0] * (real_w / 224)), 0, real_w)
-        y1 = self._clamp(int(bbox[1] * (real_h / 224)), 0, real_h)
-        w1 = int(bbox[2] * (real_w / 224))
-        h1 = int(bbox[3] * (real_h / 224))
+        # Check bbox validity
+        if not bbox or len(bbox) < 4:
+            # fallback to full image
+            return img_np
 
-        if len(img_np.shape) == 2:
-            cropped_face = img_np[y1:self._clamp(y1 + h1, 0, real_h),
-                                  x1:self._clamp(x1 + w1, 0, real_w)]
-        else:
-            cropped_face = img_np[y1:self._clamp(y1 + h1, 0, real_h),
-                                  x1:self._clamp(x1 + w1, 0, real_w), :]
-        return cropped_face
+        try:
+            x1 = max(0, int(bbox[0]))
+            y1 = max(0, int(bbox[1]))
+            x2 = min(w, x1 + max(1, int(bbox[2])))  # width >= 1
+            y2 = min(h, y1 + max(1, int(bbox[3])))  # height >= 1
+
+            cropped = img_np[y1:y2, x1:x2, :]
+            # fallback if crop is empty
+            if cropped.size == 0:
+                return img_np
+            return cropped
+
+        except Exception as e:
+            # any unexpected error, return full image
+            print(f"Skipping crop due to error: {e}")
+            return img_np

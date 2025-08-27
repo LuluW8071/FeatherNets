@@ -15,6 +15,7 @@
 # Code base on https://github.com/tonylins/pytorch-mobilenet-v2
 
 import math
+import pytorch_lightning as pl
 import torch.nn as nn
 
 def conv_bn(inp, oup, stride):
@@ -33,7 +34,7 @@ def conv_1x1_bn(inp, oup):
     )
 
 # Reference form : https://github.com/moskomule/senet.pytorch  
-class SELayer(nn.Module):
+class SELayer(pl.LightningModule):
     def __init__(self, channel, reduction=8):
         super(SELayer, self).__init__()
         self.avg_pool = nn.AdaptiveAvgPool2d(1)
@@ -50,7 +51,7 @@ class SELayer(nn.Module):
         y = self.fc(y).view(b, c, 1, 1)
         return x * y
      
-class InvertedResidual(nn.Module):
+class InvertedResidual(pl.LightningModule):
     def __init__(self, inp, oup, stride, expand_ratio, downsample=None):
         super(InvertedResidual, self).__init__()
         self.stride = stride
@@ -95,7 +96,7 @@ class InvertedResidual(nn.Module):
                 return self.conv(x)
 
 
-class FeatherNet(nn.Module):
+class FeatherNet(pl.LightningModule):
     def __init__(self, n_class=2, input_size=224, se = False, avgdown=False, width_mult=1.):
         super(FeatherNet, self).__init__()
         block = InvertedResidual
@@ -174,9 +175,3 @@ class FeatherNet(nn.Module):
 # def FeatherNetB():
 #     model = FeatherNet(se = True,avgdown=True)
 #     return model
-
-import torch
-
-X= torch.rand(1, 3, 224, 224)
-model = FeatherNet(se = True,avgdown=True)
-print(model(X).shape)
