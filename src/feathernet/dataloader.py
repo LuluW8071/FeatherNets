@@ -5,7 +5,6 @@ import albumentations as A
 
 from torch.utils.data import DataLoader
 from torchvision import transforms
-from albumentations.augmentations.blur import MotionBlur
 from albumentations.pytorch import ToTensorV2
 
 from dataset import CelebASpoofDataset  
@@ -18,62 +17,45 @@ class CelebASpoofDataModule(pl.LightningDataModule):
         self.label_dir = label_dir
         self.batch_size = batch_size
         self.num_workers = num_workers
-        self.num_classes = 1  # Binary classification: live vs spoof
-        self.pos_weight = None
 
     def setup(self, stage=None):
-        # Transforms
         train_transform = A.Compose([
-            A.Resize(224, 224,interpolation=cv2.INTER_CUBIC),
-            A.augmentations.transforms.ISONoise(
+            A.Resize(224, 224, interpolation=cv2.INTER_CUBIC),
+            A.ISONoise(
                 color_shift=(0.15,0.35), 
                 intensity=(0.1,0.5), 
-                always_apply=False, 
                 p=0.05),
-            A.augmentations.transforms.RandomBrightnessContrast(
+            A.RandomBrightnessContrast(
                 brightness_limit=(-0.2,0.2),
                 contrast_limit=(-0.2,0.2),
-                always_apply=False,
                 brightness_by_max=True,
                 p=0.125),
-            MotionBlur(
+            A.MotionBlur(
                 blur_limit=3, 
                 p=0.2),
-            A.augmentations.transforms.ImageCompression(
-                quality_lower=50,
-                quality_upper=100,
-                always_apply=False,
-                p=0.25),
-            # Cutout
-            A.augmentations.dropout.CoarseDropout(
-                max_holes=24,
-                max_height=8,
-                max_width=8,
-                min_holes=4,
-                min_height=4,
-                min_width=4,
-                fill_value=0,
-                always_apply=False,
-                p=0.25),
-            # Pixel dropout
-            A.augmentations.transforms.GaussNoise(
-                var_limit=(10.0, 50.0),
-                mean=0,
-                always_apply=False,
-                p=0.2),
-            # To tensor
+            A.CoarseDropout(
+                num_holes_range=(3, 6),
+                hole_height_range=(10, 20),
+                hole_width_range=(10, 20),
+                fill="random_uniform",
+                p=1.0
+            ),
+            A.GaussNoise(p=0.2),
             A.Normalize(mean=[0.5931, 0.4690, 0.4229],
                             std=[0.2471, 0.2214, 0.2157]),
             ToTensorV2(),
-            # Convert from [0, 255] to [0.0, 1.0]
-
-
         ])
-        test_transform = transforms.Compose([
-            transforms.Resize((224, 224)),
-            transforms.ToTensor(),
-            transforms.Normalize([0.5,0.5,0.5], [0.5,0.5,0.5])
+
+        # Transformation for the input test/val images
+        test_transform = A.Compose([
+            A.Resize(224, 224, interpolation=cv2.INTER_CUBIC),
+            A.Normalize(
+                mean=[0.5931, 0.4690, 0.4229],
+                std=[0.2471, 0.2214, 0.2157]
+            ),
+            ToTensorV2(),
         ])
+
 
         # Datasets
         self.train_data = CelebASpoofDataset(
