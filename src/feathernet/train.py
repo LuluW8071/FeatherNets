@@ -10,12 +10,6 @@ load_dotenv()
 
 
 from torch import optim
-from torchmetrics.classification import (
-    BinaryPrecision,
-    BinaryRecall,
-    BinaryAUROC,
-    BinaryConfusionMatrix
-)
 from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor, EarlyStopping
 from pytorch_lightning.loggers import CometLogger
 
@@ -31,12 +25,6 @@ class FeatherNetTrainer(pl.LightningModule):
         self.args = args
         
         self.loss_fn = FocalLoss(class_num=2, alpha=0.25, gamma=args.focal_gamma, size_average=True, device=args.device)
-
-        # Setup Metrics
-        self.precision = BinaryPrecision()
-        self.recall = BinaryRecall()
-        self.auroc = BinaryAUROC()
-        self.bin_confmat = BinaryConfusionMatrix()
         
         self.save_hyperparameters(ignore=["model"])
         
@@ -66,7 +54,7 @@ class FeatherNetTrainer(pl.LightningModule):
         return [optimizer], [scheduler]
     
     def _common_step(self, X, y):
-        outputs = self.forward(X)  # [batch, 1024]
+        outputs = self.forward(X.float())  # [batch, 1024]
         loss = self.loss_fn(outputs, y.long())
         
         return outputs, loss
@@ -88,17 +76,12 @@ class FeatherNetTrainer(pl.LightningModule):
     def validation_step(self, batch, batch_idx):
         X, y = batch
         outputs, loss = self._common_step(X, y)
-        outputs = torch.softmax(outputs, dim=-1)
-        soft_output = torch.softmax(outputs, dim=-1)
-        _, predicted = torch.max(soft_output.data, 1)
-        precision, recall, auc, apcer, bpcer, acer = self._compute_metrics(predicted, y)
+        _, predicted = torch.max(outputs, 1)
+        apcer, bpcer, acer = self._compute_metrics(predicted, y)
 
         # Log all metrics using log_dict
         metrics = {
             'val_loss': loss,
-            'val_precision': precision,
-            'val_recall': recall,
-            'val_auc': auc,
             'val_apcer': apcer,
             'val_bpcer': bpcer,
             'val_acer': acer
@@ -115,35 +98,38 @@ class FeatherNetTrainer(pl.LightningModule):
         )
         return {'val_loss': loss}
     
-    def _compute_metrics(self, soft_output, y):
+    def _compute_metrics(self, y_pred, y):
         """
-        soft_output: [batch, 2] probabilities after softmax
-        y: true labels [batch]
+        Compute ACER, APCER, BPCER using vectorized counting.
+        
+        Args:
+            y_pred: predicted class labels [batch] (already argmaxed)
+            y: true labels [batch]
+        
+        Returns:
+            apcer, bpcer, acer
         """
         y_true = y.int()
-        y_pred = torch.argmax(soft_output, dim=1)  # class predictions
 
-        # Precision, recall, AUROC
-        precision = self.precision(y_pred, y_true)
-        recall = self.recall(y_pred, y_true)
-        auc = self.auroc(soft_output[:,1], y_true)  # probability of positive class
-
-        # ACER calculation
+        # Masks for real (1) and spoof (0)
         real_mask = (y_true == 1)
         spoof_mask = (y_true == 0)
 
-        tp = (y_pred[real_mask] == 1).sum().float()
-        fn = (y_pred[real_mask] == 0).sum().float()
+        # Count errors
+        total_attack_error = (y_pred[spoof_mask] != y_true[spoof_mask]).sum().float()  # FP
+        total_normal_error = (y_pred[real_mask] != y_true[real_mask]).sum().float()   # FN
 
-        tn = (y_pred[spoof_mask] == 0).sum().float()
-        fp = (y_pred[spoof_mask] == 1).sum().float()
+        # Total samples
+        total_attack_samples = spoof_mask.sum().float()
+        total_normal_samples = real_mask.sum().float()
 
-        apcer = fp / (fp + tn + 1e-8)
-        bpcer = fn / (fn + tp + 1e-8)
+        # APCER, BPCER, ACER
+        apcer = total_attack_error / (total_attack_samples + 1e-8)
+        bpcer = total_normal_error / (total_normal_samples + 1e-8)
         acer = (apcer + bpcer) / 2
 
-        return precision, recall, auc, apcer, bpcer, acer
-    
+        return apcer, bpcer, acer
+        
     
 def main(args):
     comet_logger = CometLogger(api_key=os.getenv('API_KEY'), 
