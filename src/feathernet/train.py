@@ -13,7 +13,7 @@ from torch import optim
 from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor, EarlyStopping
 from pytorch_lightning.loggers import CometLogger
 
-from dataloader import CelebASpoofDataModule
+from dataloader import LCCFASDDataModule
 from model import FeatherNet
 from loss import FocalLoss
 
@@ -24,7 +24,7 @@ class FeatherNetTrainer(pl.LightningModule):
         self.model = model
         self.args = args
         
-        self.loss_fn = FocalLoss(class_num=2, alpha=0.25, gamma=args.focal_gamma, size_average=True, device=args.device)
+        self.loss_fn = FocalLoss(class_num=2, alpha=0.75, gamma=args.focal_gamma, size_average=True, device=args.device)
         
         self.save_hyperparameters(ignore=["model"])
         
@@ -135,10 +135,9 @@ def main(args):
     comet_logger = CometLogger(api_key=os.getenv('API_KEY'), 
                                project=os.getenv('PROJECT_NAME'))
     
-    dataloader = CelebASpoofDataModule(data_dir=args.data_path,
-                                      label_dir=args.label_path,
-                                      batch_size=args.batch_size, 
-                                      num_workers=args.data_workers)
+    dataloader = LCCFASDDataModule(data_dir=args.data_path,
+                                   batch_size=args.batch_size, 
+                                   num_workers=args.data_workers)
     
     # Call setup to initialize datasets
     dataloader.setup('fit')  
@@ -176,6 +175,7 @@ def main(args):
     # Fit the model to the training data using the Trainer's fit method.
     trainer.fit(spoof_trainer, dataloader)
     trainer.validate(spoof_trainer, dataloader)
+    trainer.test(spoof_trainer, dataloader)
 
 
 if __name__  == "__main__":
