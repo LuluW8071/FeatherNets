@@ -22,7 +22,7 @@ def conv_bn(inp, oup, stride):
     return nn.Sequential(
         nn.Conv2d(inp, oup, 3, stride, 1, bias=False),
         nn.BatchNorm2d(oup),
-        nn.ReLU6(inplace=True)
+        nn.Hardswish(inplace=True)
     )
 
 
@@ -30,7 +30,7 @@ def conv_1x1_bn(inp, oup):
     return nn.Sequential(
         nn.Conv2d(inp, oup, 1, 1, 0, bias=False),
         nn.BatchNorm2d(oup),
-        nn.ReLU6(inplace=True)
+        nn.Hardswish(inplace=True)
     )
 
 # Reference form : https://github.com/moskomule/senet.pytorch  
@@ -40,7 +40,7 @@ class SELayer(pl.LightningModule):
         self.avg_pool = nn.AdaptiveAvgPool2d(1)
         self.fc = nn.Sequential(
                 nn.Linear(channel, channel // reduction),
-                nn.ReLU(inplace=True),
+                nn.Hardswish(inplace=True),
                 nn.Linear(channel // reduction, channel),
                 nn.Sigmoid()
         )
@@ -66,7 +66,7 @@ class InvertedResidual(pl.LightningModule):
                 # dw
                 nn.Conv2d(hidden_dim, hidden_dim, 3, stride, 1, groups=hidden_dim, bias=False),
                 nn.BatchNorm2d(hidden_dim),
-                nn.ReLU6(inplace=True),
+                nn.Hardswish(inplace=True),
                 # pw-linear
                 nn.Conv2d(hidden_dim, oup, 1, 1, 0, bias=False),
                 nn.BatchNorm2d(oup),
@@ -76,11 +76,11 @@ class InvertedResidual(pl.LightningModule):
                 # pw
                 nn.Conv2d(inp, hidden_dim, 1, 1, 0, bias=False),
                 nn.BatchNorm2d(hidden_dim),
-                nn.ReLU6(inplace=True),
+                nn.Hardswish(inplace=True),
                 # dw
                 nn.Conv2d(hidden_dim, hidden_dim, 3, stride, 1, groups=hidden_dim, bias=False),
                 nn.BatchNorm2d(hidden_dim),
-                nn.ReLU6(inplace=True),
+                nn.Hardswish(inplace=True),
                 # pw-linear
                 nn.Conv2d(hidden_dim, oup, 1, 1, 0, bias=False),
                 nn.BatchNorm2d(oup),
