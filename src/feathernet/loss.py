@@ -1,7 +1,6 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.autograd import Variable
 
 class FocalLoss(nn.Module):
     """
@@ -33,10 +32,9 @@ class FocalLoss(nn.Module):
         C = inputs.size(1)
         P = F.softmax(inputs, dim=1)
         
-        class_mask = inputs.data.new(N, C).fill_(0)
-        class_mask = Variable(class_mask)
-        ids = targets.view(-1, 1)
-        class_mask.scatter_(1, ids.data, 1.)
+        class_mask = torch.zeros_like(inputs)
+        ids = targets.view(-1,1)
+        class_mask.scatter_(1, ids, 1.)
         
         if inputs.is_cuda and not self.alpha.is_cuda:
             self.alpha = self.alpha.to(self.device)

@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
-from torch import optim
+from torch import nn, optim 
 from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor, EarlyStopping
 from pytorch_lightning.loggers import CometLogger
 
@@ -25,7 +25,7 @@ class FeatherNetTrainer(pl.LightningModule):
         self.args = args
         
         self.loss_fn = FocalLoss(class_num=2, alpha=0.75, gamma=args.focal_gamma, size_average=True, device=args.device)
-        
+        # self.loss_fn = nn.CrossEntropyLoss()
         self.save_hyperparameters(ignore=["model"])
         
         self.sync_dist = True if args.gpu_nodes > 1 else False
