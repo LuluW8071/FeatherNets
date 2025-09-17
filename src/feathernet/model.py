@@ -39,10 +39,10 @@ class SELayer(pl.LightningModule):
         super(SELayer, self).__init__()
         self.avg_pool = nn.AdaptiveAvgPool2d(1)
         self.fc = nn.Sequential(
-                nn.Linear(channel, channel // reduction),
-                nn.Hardswish(inplace=True),
-                nn.Linear(channel // reduction, channel),
-                nn.Sigmoid()
+            nn.Linear(channel, channel // reduction),
+            nn.Hardswish(inplace=True),
+            nn.Linear(channel // reduction, channel),
+            nn.Sigmoid()
         )
 
     def forward(self, x):
@@ -96,8 +96,9 @@ class InvertedResidual(pl.LightningModule):
                 return self.conv(x)
 
 
+
 class FeatherNet(pl.LightningModule):
-    def __init__(self, n_class=2, input_size=224, se = False, avgdown=False, width_mult=1.):
+    def __init__(self, n_class=2, input_size=224, se=False, avgdown=False, width_mult=1.):
         super(FeatherNet, self).__init__()
         block = InvertedResidual
         input_channel = 32
@@ -107,9 +108,9 @@ class FeatherNet(pl.LightningModule):
         interverted_residual_setting = [
             # t, c, n, s
             [1, 16, 1, 2],
-            [6, 32, 2, 2], # 56x56
-            [6, 48, 6, 2], # 14x14
-            [6, 64, 3, 2], # 7x7
+            [6, 32, 2, 2],  # 56x56
+            [6, 48, 6, 2],  # 14x14
+            [6, 64, 3, 2],  # 7x7
         ]
 
         # building first layer
@@ -117,6 +118,7 @@ class FeatherNet(pl.LightningModule):
         input_channel = int(input_channel * width_mult)
         self.last_channel = int(last_channel * width_mult) if width_mult > 1.0 else last_channel
         self.features = [conv_bn(3, input_channel, 2)]
+
         # building inverted residual blocks
         for t, c, n, s in interverted_residual_setting:
             output_channel = int(c * width_mult)
@@ -124,32 +126,40 @@ class FeatherNet(pl.LightningModule):
                 downsample = None
                 if i == 0:
                     if self.avgdown:
-                        downsample = nn.Sequential(nn.AvgPool2d(2, stride=2),
-                        nn.BatchNorm2d(input_channel),
-                        nn.Conv2d(input_channel, output_channel , kernel_size=1, bias=False)
+                        downsample = nn.Sequential(
+                            nn.AvgPool2d(2, stride=2),
+                            nn.BatchNorm2d(input_channel),
+                            nn.Conv2d(input_channel, output_channel, kernel_size=1, bias=False)
                         )
-                    self.features.append(block(input_channel, output_channel, s, expand_ratio=t, downsample = downsample))
+                    self.features.append(block(input_channel, output_channel, s, expand_ratio=t, downsample=downsample))
                 else:
-                    self.features.append(block(input_channel, output_channel, 1, expand_ratio=t, downsample = downsample))
+                    self.features.append(block(input_channel, output_channel, 1, expand_ratio=t, downsample=downsample))
                 input_channel = output_channel
             if self.se:
                 self.features.append(SELayer(input_channel))
 
         # make it nn.Sequential
         self.features = nn.Sequential(*self.features)
-#         building last several layers        
-        self.final_DW = nn.Sequential(nn.Conv2d(input_channel, input_channel, kernel_size=3, stride=2, padding=1,
-                                  groups=input_channel, bias=False),
-                                     )
 
+        # final depthwise conv
+        self.final_DW = nn.Sequential(
+            nn.Conv2d(input_channel, input_channel, kernel_size=3, stride=2, padding=1,
+                      groups=input_channel, bias=False),
+        )
+
+        # Final classification head
+        self.classifier = nn.Sequential(
+            nn.Dropout(p=0.2),
+            nn.Linear(self.last_channel, n_class)
+        )
 
         self._initialize_weights()
 
     def forward(self, x):
         x = self.features(x)
         x = self.final_DW(x)
-        
-        x = x.view(x.size(0), -1)
+        x = x.view(x.size(0), -1)    # flatten to [B, 1024]
+        x = self.classifier(x)       # logits -> [B, n_class]
         return x
 
     def _initialize_weights(self):
@@ -167,11 +177,24 @@ class FeatherNet(pl.LightningModule):
                 m.weight.data.normal_(0, 0.01)
                 m.bias.data.zero_()
 
+
 # Two models FeatherNetA and FeatherNetB
 # def FeatherNetA():
 #     model = FeatherNet(se = True)
 #     return model
 
-# def FeatherNetB():
-#     model = FeatherNet(se = True,avgdown=True)
-#     return model
+
+if __name__ == "__main__":
+    import torch
+    import torch.nn.functional as F
+
+    model = FeatherNet(se = True)                   # FeatherNetA
+    model = FeatherNet(se = True, avgdown=True)     # FeatherNetB
+    sample = torch.rand((16, 3, 224, 224))
+    logits = model(sample)                   # raw scores (logits)
+    probs = F.softmax(logits, dim=1)         # probabilities
+
+    print("Logits:\n", logits)
+    print("\nSoftmax probabilities:\n", probs)
+    print("\nPredicted class indices:\n", torch.argmax(probs, dim=1))
+
