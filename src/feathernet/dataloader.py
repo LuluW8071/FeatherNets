@@ -7,6 +7,7 @@ import cv2
 
 from torch.utils.data import DataLoader
 from torchvision.datasets import ImageFolder
+from albumentations.pytorch import ToTensorV2
 
 
 # Albumentations wrapper for ImageFolder
@@ -45,8 +46,9 @@ class LCCFASDDataModule(pl.LightningDataModule):
         ]))
 
         self.train_data = ImageFolder(os.path.join(self.data_dir, "LCC_FASD_training"), transform=train_transform)
-        self.val_data   = ImageFolder(os.path.join(self.data_dir, "LCC_FASD_evaluation"), transform=test_transform)
-        self.test_data  = ImageFolder(os.path.join(self.data_dir, "LCC_FASD_development"), transform=test_transform)
+        self.val_data = ImageFolder(os.path.join(self.data_dir, "LCC_FASD_evaluation"), transform=test_transform)
+        self.test_data = ImageFolder(os.path.join(self.data_dir, "LCC_FASD_development"), transform=test_transform)
+        print(self.val_data.class_to_idx)
 
     def train_dataloader(self):
         return DataLoader(self.train_data, batch_size=self.batch_size, shuffle=True, num_workers=self.num_workers, pin_memory=True)

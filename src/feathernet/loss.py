@@ -28,8 +28,8 @@ class FocalLoss(nn.Module):
         inputs: logits tensor of shape [N, C] 
         targets: labels tensor of shape [N] (0..C-1)
         """
-        N = inputs.size(0)
-        C = inputs.size(1)
+        # N = inputs.size(0)
+        # C = inputs.size(1)
         P = F.softmax(inputs, dim=1)
         
         class_mask = torch.zeros_like(inputs)
