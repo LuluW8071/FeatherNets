@@ -15,8 +15,11 @@
 # Code base on https://github.com/tonylins/pytorch-mobilenet-v2
 
 import math
-import pytorch_lightning as pl
+import torch
 import torch.nn as nn
+import torch.nn.functional as F
+import pytorch_lightning as pl
+
 
 def conv_bn(inp, oup, stride):
     return nn.Sequential(
@@ -33,8 +36,8 @@ def conv_1x1_bn(inp, oup):
         nn.Hardswish(inplace=True)
     )
 
-# Reference form : https://github.com/moskomule/senet.pytorch  
-class SELayer(pl.LightningModule):
+
+class SELayer(nn.Module):
     def __init__(self, channel, reduction=8):
         super(SELayer, self).__init__()
         self.avg_pool = nn.AdaptiveAvgPool2d(1)
@@ -50,116 +53,96 @@ class SELayer(pl.LightningModule):
         y = self.avg_pool(x).view(b, c)
         y = self.fc(y).view(b, c, 1, 1)
         return x * y
-     
-class InvertedResidual(pl.LightningModule):
-    def __init__(self, inp, oup, stride, expand_ratio, downsample=None):
+
+
+class InvertedResidual(nn.Module):
+    def __init__(self, inp, oup, stride, expand_ratio, se=False, downsample=None):
         super(InvertedResidual, self).__init__()
         self.stride = stride
-        assert stride in [1, 2]
+        self.use_res_connect = stride == 1 and inp == oup
+        hidden_dim = round(inp * expand_ratio)
+        self.se = se
         self.downsample = downsample
 
-        hidden_dim = round(inp * expand_ratio)
-        self.use_res_connect = self.stride == 1 and inp == oup
+        layers = []
+        if expand_ratio != 1:
+            # pointwise
+            layers.append(nn.Conv2d(inp, hidden_dim, 1, 1, 0, bias=False))
+            layers.append(nn.BatchNorm2d(hidden_dim))
+            layers.append(nn.Hardswish(inplace=True))
 
-        if expand_ratio == 1:
-            self.conv = nn.Sequential(
-                # dw
-                nn.Conv2d(hidden_dim, hidden_dim, 3, stride, 1, groups=hidden_dim, bias=False),
-                nn.BatchNorm2d(hidden_dim),
-                nn.Hardswish(inplace=True),
-                # pw-linear
-                nn.Conv2d(hidden_dim, oup, 1, 1, 0, bias=False),
-                nn.BatchNorm2d(oup),
-            )
-        else:
-            self.conv = nn.Sequential(
-                # pw
-                nn.Conv2d(inp, hidden_dim, 1, 1, 0, bias=False),
-                nn.BatchNorm2d(hidden_dim),
-                nn.Hardswish(inplace=True),
-                # dw
-                nn.Conv2d(hidden_dim, hidden_dim, 3, stride, 1, groups=hidden_dim, bias=False),
-                nn.BatchNorm2d(hidden_dim),
-                nn.Hardswish(inplace=True),
-                # pw-linear
-                nn.Conv2d(hidden_dim, oup, 1, 1, 0, bias=False),
-                nn.BatchNorm2d(oup),
-            )
+        # depthwise
+        layers.append(nn.Conv2d(hidden_dim, hidden_dim, 3, stride, 1, groups=hidden_dim, bias=False))
+        layers.append(nn.BatchNorm2d(hidden_dim))
+        layers.append(nn.Hardswish(inplace=True))
+
+        # SE layer
+        if se:
+            layers.append(SELayer(hidden_dim))
+
+        # pointwise linear
+        layers.append(nn.Conv2d(hidden_dim, oup, 1, 1, 0, bias=False))
+        layers.append(nn.BatchNorm2d(oup))
+
+        self.conv = nn.Sequential(*layers)
 
     def forward(self, x):
         if self.use_res_connect:
             return x + self.conv(x)
+        elif self.downsample is not None:
+            return self.downsample(x) + self.conv(x)
         else:
-            if self.downsample is not None:
-                return self.downsample(x) + self.conv(x)
-            else:
-                return self.conv(x)
-
+            return self.conv(x)
 
 
 class FeatherNet(pl.LightningModule):
-    def __init__(self, n_class=2, input_size=224, se=False, avgdown=False, width_mult=1.):
+    def __init__(self, n_class=2, input_size=224, se=False, avgdown=False, width_mult=1.0):
         super(FeatherNet, self).__init__()
         block = InvertedResidual
-        input_channel = 32
-        last_channel = 1024
         self.se = se
         self.avgdown = avgdown
-        interverted_residual_setting = [
-            # t, c, n, s
-            [1, 16, 1, 2],
-            [6, 32, 2, 2],  # 56x56
-            [6, 48, 6, 2],  # 14x14
-            [6, 64, 3, 2],  # 7x7
-        ]
+        self.width_mult = width_mult
 
-        # building first layer
-        assert input_size % 32 == 0
-        input_channel = int(input_channel * width_mult)
+        input_channel = int(32 * width_mult)
+        last_channel = 1024
         self.last_channel = int(last_channel * width_mult) if width_mult > 1.0 else last_channel
+
         self.features = [conv_bn(3, input_channel, 2)]
 
-        # building inverted residual blocks
-        for t, c, n, s in interverted_residual_setting:
+        # inverted residual settings: t, c, n, s
+        settings = [
+            [1, 16, 1, 2],
+            [6, 32, 2, 2],
+            [6, 48, 6, 2],
+            [6, 64, 3, 2],
+        ]
+
+        for t, c, n, s in settings:
             output_channel = int(c * width_mult)
             for i in range(n):
+                stride = s if i == 0 else 1
                 downsample = None
-                if i == 0:
-                    if self.avgdown:
-                        downsample = nn.Sequential(
-                            nn.AvgPool2d(2, stride=2),
-                            nn.BatchNorm2d(input_channel),
-                            nn.Conv2d(input_channel, output_channel, kernel_size=1, bias=False)
-                        )
-                    self.features.append(block(input_channel, output_channel, s, expand_ratio=t, downsample=downsample))
-                else:
-                    self.features.append(block(input_channel, output_channel, 1, expand_ratio=t, downsample=downsample))
+                if self.avgdown and i == 0 and stride != 1:
+                    downsample = nn.Sequential(
+                        nn.AvgPool2d(stride, stride),
+                        nn.Conv2d(input_channel, output_channel, 1, bias=False),
+                        nn.BatchNorm2d(output_channel)
+                    )
+                self.features.append(block(input_channel, output_channel, stride, t, se=self.se, downsample=downsample))
                 input_channel = output_channel
-            if self.se:
-                self.features.append(SELayer(input_channel))
 
-        # make it nn.Sequential
         self.features = nn.Sequential(*self.features)
 
-        # final depthwise conv
-        self.final_DW = nn.Sequential(
-            nn.Conv2d(input_channel, input_channel, kernel_size=3, stride=2, padding=1,
-                      groups=input_channel, bias=False),
-        )
-
-        # Final classification head
-        self.classifier = nn.Sequential(
-            nn.Dropout(p=0.2),
-            nn.Linear(self.last_channel, n_class)
-        )
+        self.final_dw = nn.Conv2d(input_channel, self.last_channel, 1, 1, 0, bias=False)
+        self.classifier = nn.Linear(self.last_channel, n_class)
 
         self._initialize_weights()
 
     def forward(self, x):
         x = self.features(x)
-        x = self.final_DW(x)
-        x = x.view(x.size(0), -1)    # flatten to [B, 1024]
-        x = self.classifier(x)       # logits -> [B, n_class]
+        x = self.final_dw(x)
+        x = x.mean([2, 3])  # global average pool
+        x = self.classifier(x)
         return x
 
     def _initialize_weights(self):
@@ -173,7 +156,6 @@ class FeatherNet(pl.LightningModule):
                 m.weight.data.fill_(1)
                 m.bias.data.zero_()
             elif isinstance(m, nn.Linear):
-                n = m.weight.size(1)
                 m.weight.data.normal_(0, 0.01)
                 m.bias.data.zero_()
 
@@ -183,12 +165,11 @@ class FeatherNet(pl.LightningModule):
 #     model = FeatherNet(se = True)
 #     return model
 
-
 if __name__ == "__main__":
     import torch
     import torch.nn.functional as F
 
-    model = FeatherNet(se = True)                   # FeatherNetA
+    # model = FeatherNet(se = True)                   # FeatherNetA
     model = FeatherNet(se = True, avgdown=True)     # FeatherNetB
     sample = torch.rand((16, 3, 224, 224))
     logits = model(sample)                   # raw scores (logits)

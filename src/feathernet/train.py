@@ -24,8 +24,14 @@ class FeatherNetTrainer(pl.LightningModule):
         self.model = model
         self.args = args
         
-        self.loss_fn = FocalLoss(class_num=2, alpha=0.75, gamma=args.focal_gamma, size_average=True, device=args.device)
-        # self.loss_fn = nn.CrossEntropyLoss()
+        self.loss_fn = FocalLoss(
+            class_num=2, 
+            alpha=0.6, 
+            gamma=args.focal_gamma, 
+            size_average=True, 
+            device=args.device
+        )
+        # self.loss_fn = nn.CrossEntropyLoss(weight=torch.tensor([0.75, 0.25]))
         self.save_hyperparameters(ignore=["model"])
         
         self.sync_dist = True if args.gpu_nodes > 1 else False
@@ -76,7 +82,10 @@ class FeatherNetTrainer(pl.LightningModule):
     def validation_step(self, batch, batch_idx):
         X, y = batch
         outputs, loss = self._common_step(X, y)
-        _, predicted = torch.max(outputs, 1)
+        probs = torch.softmax(outputs, dim=1)
+        predicted = torch.argmax(probs, dim=1)
+        if batch_idx % 50 == 0:
+            print("Probabilities:", probs)
         apcer, bpcer, acer = self._compute_metrics(predicted, y)
 
         # Log all metrics using log_dict
@@ -98,6 +107,32 @@ class FeatherNetTrainer(pl.LightningModule):
         )
         return {'val_loss': loss}
     
+    def test_step(self, batch, batch_idx):
+        X, y = batch
+        outputs, loss = self._common_step(X, y)
+        probs = torch.softmax(outputs, dim=1)
+        predicted = torch.argmax(probs, dim=1)
+        apcer, bpcer, acer = self._compute_metrics(predicted, y)
+
+        # Log all metrics using log_dict
+        metrics = {
+            'test_loss': loss,
+            'test_apcer': apcer,
+            'test_bpcer': bpcer,
+            'test_acer': acer
+        }
+
+        self.log_dict(
+            metrics,
+            on_step=False,
+            on_epoch=True,
+            prog_bar=True,
+            logger=True,
+            batch_size=self.args.batch_size,
+            sync_dist=self.sync_dist,
+        )
+        return {'test_loss': loss}
+    
     def _compute_metrics(self, y_pred, y):
         """
         Compute ACER, APCER, BPCER using vectorized counting.
@@ -111,9 +146,8 @@ class FeatherNetTrainer(pl.LightningModule):
         """
         y_true = y.int()
 
-        # Masks for real (1) and spoof (0)
-        real_mask = (y_true == 1)
-        spoof_mask = (y_true == 0)
+        real_mask = (y_true == 0)
+        spoof_mask = (y_true == 1)
 
         # Count errors
         total_attack_error = (y_pred[spoof_mask] != y_true[spoof_mask]).sum().float()  # FP
@@ -147,18 +181,19 @@ def main(args):
     spoof_trainer = FeatherNetTrainer(model=model, args=args) 
 
     checkpoint_callback = ModelCheckpoint(
-        monitor='val_acer',
+        monitor='val_loss',
         dirpath="./saved_checkpoint/",       
-        filename='model-{epoch:02d}-{val_loss:.3f}-{val_acer:.4f}',                                             
-        save_top_k=8,
+        filename='feathernet-{epoch:02d}-{val_acer:.5f}',                                             
+        save_top_k=3,
         mode='min'
     )
 
     # Trainer Parameters
     trainer_args = {
         'accelerator': args.device,                                     # Device to use for training
-        'devices': args.gpu_nodes,                                           # Number of GPUs to use for training
-        'max_epochs': args.epochs,                                      # Maxm. no. of epochs to run                               
+        'devices': args.gpu_nodes,                                      # Number of GPUs to use for training
+        'max_epochs': args.epochs,                                      # Maxm. no. of epochs to run   
+        'gradient_clip_val': args.grad_clip,                           # Gradient clipping value
         'precision': args.precision,                                    # Precision to use for training
         'check_val_every_n_epoch': 1,                                   # No. of epochs to run validation
         'callbacks': [LearningRateMonitor(logging_interval='epoch'),    # Callbacks to use for training
@@ -191,19 +226,15 @@ if __name__  == "__main__":
 
     # Train and Test Directory Params
     parser.add_argument('--data_path', 
-                        default="/teamspace/studios/this_studio/.cache/kagglehub/datasets/attentionlayer241/celeba-spoof-for-face-antispoofing/versions/2/CelebA_Spoof_/CelebA_Spoof/Data",
-                        required=False, type=str, 
+                        required=True, type=str, 
                         help='Folder path to load data')
-    parser.add_argument('--label_path',
-                        default="/teamspace/studios/this_studio/.cache/kagglehub/datasets/attentionlayer241/celeba-spoof-for-face-antispoofing/versions/2/CelebA_Spoof_/CelebA_Spoof/metas/intra_test", 
-                        required=False, type=str,
-                        help='Folder path to load label data')
 
     
     # General Train Hyperparameters
     parser.add_argument('--epochs', default=30, type=int, help='number of total epochs to run')
     parser.add_argument('--batch_size', default=64, type=int, help='size of batch')
     parser.add_argument('-lr', '--learning_rate', default=1e-3, type=float, help='initial learning rate')
+    parser.add_argument('--grad_clip', default=0.4, type=float, help='gradient clipping value')
     parser.add_argument('--focal_gamma', default=2.0, type=float, help='gamma value for focal loss')
     parser.add_argument('--precision', default='16-mixed', type=str, help='precision')
     
