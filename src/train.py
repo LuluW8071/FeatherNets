@@ -23,7 +23,7 @@ from torchmetrics.classification import (
 )
 
 from dataloader import SpoofDataModule
-from model import mod_feathernet
+from feathernet.feathernet import FeatherNet
 from multi_task_criterion import MultiTaskCriterion
 
 
@@ -233,10 +233,8 @@ def main(args):
     # Call setup to initialize datasets
     dataloader.setup('fit')  
     
-
     # Initialize the model
-    # model = mobileone(variant='s4', inference_mode=False)
-    model = mod_feathernet.FeatherNet() 
+    model = FeatherNet() 
     spoof_trainer = FeatherNetTrainer(model=model, args=args) 
     
     checkpoint_callback = ModelCheckpoint(
