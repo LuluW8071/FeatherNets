@@ -1,101 +1,59 @@
 import os
 import numpy as np
-import albumentations as A
+import torch
+import cv2
 
-from PIL import Image
 from torch.utils.data import Dataset
 
-class CelebASpoofDataset(Dataset):
-    """
-    Dataset for CelebA-Spoof.
+np.random.seed(42)
 
-    Returns:
-        image: Tensor (after Albumentations ToTensorV2)
-        label: int (0=spoof, 1=live)
-    """
-    def __init__(self, data_dir, label_file, transform=None):
-        self.data_dir = data_dir
+# -------------------------------
+# LCC-FASD Dataset
+# -------------------------------
+class LCCFASDDataset(Dataset):
+    def __init__(self, base_dir, split="train", transform=None, map_transform=None):
+        self.base_dir = base_dir
+        self.split = split
         self.transform = transform
-        self.samples = []  # List of tuples (img_path, label, bbox)
+        self.map_transform = map_transform
+        self.samples = []
 
-        with open(label_file, "r") as f:
-            for line in f:
-                parts = line.strip().split()
-                if len(parts) < 2:
-                    continue
-                img_rel, label = parts[0], int(parts[1])
-                img_path = os.path.join(data_dir, img_rel.split("/", 1)[-1])
-                bb_path = img_path[:-4] + "_BB.txt"
+        for label_name, bin_label in [("real", 0), ("spoof", 1)]:
+            folder = os.path.join(base_dir, f"{split}/{label_name}")
+            if not os.path.exists(folder):
+                continue
+            for file in os.listdir(folder):
+                if file.lower().endswith(".jpg") and not file.endswith("_depth.jpg"):
+                    rgb_path = os.path.join(folder, file)
+                    depth_path = os.path.join(
+                        folder, os.path.splitext(file)[0] + "_depth.jpg"
+                    )
+                    self.samples.append((rgb_path, depth_path, bin_label))
 
-                if not os.path.exists(img_path) or not os.path.exists(bb_path):
-                    continue
-
-                try:
-                    bbox = self._read_bbox(bb_path)
-                    self.samples.append((img_path, 1 if label == 1 else 0, bbox))
-                except Exception as e:
-                    print(f"Skipping {img_path}: {e}")
+        np.random.shuffle(self.samples)
 
     def __len__(self):
         return len(self.samples)
 
     def __getitem__(self, idx):
-        img_path, label, bbox = self.samples[idx]
+        rgb_path, depth_path, bin_label = self.samples[idx]
 
-        # Load image
-        image = Image.open(img_path).convert("RGB")
-        image_np = np.array(image)  # HWC
+        # --- RGB ---
+        img = cv2.imread(rgb_path)
+        if img is None:
+            raise ValueError(f"Failed to load RGB image: {rgb_path}")
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
-        # Crop face safely
-        cropped_np = self._crop_face(image_np, bbox)
+        # --- Depth ---
+        depth = cv2.imread(depth_path, cv2.IMREAD_UNCHANGED)
+        if depth is None:
+            raise ValueError(f"Failed to load depth image: {depth_path}")
 
-        # Handle empty crops
-        if cropped_np.size == 0 or cropped_np.shape[0] == 0 or cropped_np.shape[1] == 0:
-            # fallback: use full image
-            cropped_np = image_np
-
-        # Apply transform
+        # Apply transforms
         if self.transform:
-            if isinstance(self.transform, A.Compose):
-                augmented = self.transform(image=cropped_np)
-                cropped_np = augmented['image']
-            else:  # torchvision transforms
-                cropped_np = self.transform(Image.fromarray(cropped_np))
+            img = self.transform(img)
+        if self.map_transform:
+            depth = self.map_transform(depth)
 
-        return cropped_np, label
-
-    def _read_bbox(self, bb_path):
-        """Read bounding box from _BB.txt file."""
-        with open(bb_path, "r") as f:
-            line = f.readline()
-        bbox = [int(x) for x in line.strip().split()[:4]]  # x, y, w, h
-        return bbox
-
-    @staticmethod
-    def _clamp(x, min_x, max_x):
-        return min(max(x, min_x), max_x)
-
-    def _crop_face(self, img_np, bbox):
-        h, w = img_np.shape[:2]
-
-        # Check bbox validity
-        if not bbox or len(bbox) < 4:
-            # fallback to full image
-            return img_np
-
-        try:
-            x1 = max(0, int(bbox[0]))
-            y1 = max(0, int(bbox[1]))
-            x2 = min(w, x1 + max(1, int(bbox[2])))  # width >= 1
-            y2 = min(h, y1 + max(1, int(bbox[3])))  # height >= 1
-
-            cropped = img_np[y1:y2, x1:x2, :]
-            # fallback if crop is empty
-            if cropped.size == 0:
-                return img_np
-            return cropped
-
-        except Exception as e:
-            # any unexpected error, return full image
-            print(f"Skipping crop due to error: {e}")
-            return img_np
+        bin_label = torch.tensor(bin_label, dtype=torch.float32)
+        return img, (bin_label, depth)
