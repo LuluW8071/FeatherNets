@@ -32,18 +32,9 @@ class FeatherNetTrainer(pl.LightningModule):
     def __init__(self, model, args):
         super(FeatherNetTrainer, self).__init__()
         self.model = model
-        
-        # Modify the classifier layer
-        # num_ftrs = self.model.linear.in_features  
-        # self.model.linear = nn.Sequential(
-        #                 nn.Linear(in_features=num_ftrs, out_features=512),
-        #                 nn.ReLU(),
-        #                 nn.Dropout(0.2),
-        #                 nn.Linear(in_features=512, out_features=1))
-
         self.args = args
 
-        self.loss_fn = MultiTaskCriterion(alpha=[0.75, 0.25], gamma=args.focal_gamma, device=args.device) # [real_alpha, spoof_alpha]
+        self.loss_fn = MultiTaskCriterion(alpha=0.7, gamma=args.focal_gamma, device=args.device) # [real_alpha, spoof_alpha]
 
         # Metrics
         self.accuracy = Accuracy(task="binary", num_classes=2)
@@ -51,6 +42,11 @@ class FeatherNetTrainer(pl.LightningModule):
         self.recall = Recall(task="binary", num_classes=2)
         self.f1_score = F1Score(task="binary", num_classes=2)
         self.auroc = AUROC(task="binary")
+
+        self.val_losses, self.test_losses = [], []
+        self.val_preds, self.test_preds = [], []
+        self.val_probs, self.test_probs = [], []
+        self.val_labels, self.test_labels = [], []
         
         self.sync_dist = True if args.gpu_nodes > 1 else False
 
@@ -96,7 +92,7 @@ class FeatherNetTrainer(pl.LightningModule):
         metrics = {
             'spoof_loss': spoof_loss,
             'depth_loss': depth_loss,
-            'loss': loss,
+            'train_loss': loss,
         }
         self.log_dict(
             metrics,
@@ -111,44 +107,86 @@ class FeatherNetTrainer(pl.LightningModule):
     def validation_step(self, batch, batch_idx):
         X, y = batch
         preds, probs, val_loss = self._common_val_step(X, y)
-        # print(y[0])
-        acc, precision, recall, f1_score, auc, acer = self._compute_metrics(preds, probs, y[0])
-        prog_log_metrics={
-            'val_loss': val_loss,
-            'val_acer': acer,
-        }
+
+        # Store batch outputs for epoch aggregation
+        self.val_losses.append(val_loss)
+        self.val_preds.append(preds)
+        self.val_probs.append(probs)
+        self.val_labels.append(y[0])
+        return {'val_loss': val_loss}
+
+
+    def on_validation_epoch_end(self):
+        # Concatenate all batches
+        all_preds = torch.cat(self.val_preds)
+        all_probs = torch.cat(self.val_probs)
+        all_y = torch.cat(self.val_labels)
+        avg_loss = torch.stack(self.val_losses).mean()
+
+        # Compute metrics using centralized function
+        acc, precision, recall, f1_score, auc, acer = self._compute_metrics(all_preds, all_probs, all_y)
+
+        # Log metrics
+        prog_log_metrics = {'val_loss': avg_loss, 'val_acer': acer}
         metrics = {
             'val_acc': acc,
             'val_precision': precision,
             'val_recall': recall,
             'val_f1': f1_score,
-            'val_auc': auc,
+            'val_auc': auc
         }
-        self.log_dict(prog_log_metrics, on_step=False, on_epoch=True, prog_bar=True, logger=True, batch_size=self.args.batch_size, sync_dist=self.sync_dist)
-        self.log_dict(metrics, on_step=False, on_epoch=True, prog_bar=False, logger=True, batch_size=self.args.batch_size, sync_dist=self.sync_dist)
-        return {'val_loss': val_loss}
+
+        self.log_dict(prog_log_metrics, on_step=False, on_epoch=True, prog_bar=True,
+                    logger=True, batch_size=self.args.batch_size, sync_dist=self.sync_dist)
+        self.log_dict(metrics, on_step=False, on_epoch=True, prog_bar=False,
+                    logger=True, batch_size=self.args.batch_size, sync_dist=self.sync_dist)
+
+        # Clear lists for next epoch
+        self.val_losses.clear()
+        self.val_preds.clear()
+        self.val_probs.clear()
+        self.val_labels.clear()
+
 
     def test_step(self, batch, batch_idx):
         X, y = batch
         preds, probs, test_loss = self._common_val_step(X, y)
 
-        if batch_idx % 500 == 0:
-            print(probs)
+        self.test_losses.append(test_loss)
+        self.test_preds.append(preds)
+        self.test_probs.append(probs)
+        self.test_labels.append(y[0])
+        return {'test_loss': test_loss}
 
-        acc, precision, recall, f1_score, auc, acer = self._compute_metrics(preds, probs, y[0])
+
+    def on_test_epoch_end(self):
+        all_preds = torch.cat(self.test_preds)
+        all_probs = torch.cat(self.test_probs)
+        all_y = torch.cat(self.test_labels)
+        avg_loss = torch.stack(self.test_losses).mean()
+
+        # Compute metrics centrally
+        acc, precision, recall, f1_score, auc, acer = self._compute_metrics(all_preds, all_probs, all_y)
+
         metrics = {
-            'test_loss': test_loss,
+            'test_loss': avg_loss,
             'test_acc': acc,
             'test_precision': precision,
             'test_recall': recall,
             'test_f1': f1_score,
             'test_auc': auc,
-            'test_acer': acer,
+            'test_acer': acer
         }
-        self.log_dict(metrics, on_step=False, on_epoch=True, prog_bar=False, logger=True, batch_size=self.args.batch_size, sync_dist=self.sync_dist)
 
-        return {'test_loss': test_loss}
-    
+        self.log_dict(metrics, on_step=False, on_epoch=True, prog_bar=False,
+                    logger=True, batch_size=self.args.batch_size, sync_dist=self.sync_dist)
+
+        # Clear lists
+        self.test_losses.clear()
+        self.test_preds.clear()
+        self.test_probs.clear()
+        self.test_labels.clear()
+
     def _compute_metrics(self, y_pred: torch.Tensor, y_prob: torch.Tensor, y: torch.Tensor):
         """
         Compute ACER, APCER, BPCER using vectorized counting.
@@ -179,14 +217,14 @@ class FeatherNetTrainer(pl.LightningModule):
         precision = self.precision(y_pred, y_true)
         recall = self.recall(y_pred, y_true)
         f1_score = self.f1_score(y_pred, y_true)
-        auc = self.auroc(y_prob, y_true)   # y_prob = probs[:,1]
+        auc = self.auroc(y_prob, y_true) 
 
         return acc, precision, recall, f1_score, auc, acer
-        
     
 def main(args):
     comet_logger = CometLogger(api_key=os.getenv('API_KEY'), 
                                project=os.getenv('PROJECT_NAME'))
+    
     
     dataloader = SpoofDataModule(lcc_dir=args.lcc_dir,
                                 batch_size=args.batch_size, 
@@ -200,13 +238,13 @@ def main(args):
     # model = mobileone(variant='s4', inference_mode=False)
     model = mod_feathernet.FeatherNet() 
     spoof_trainer = FeatherNetTrainer(model=model, args=args) 
-
+    
     checkpoint_callback = ModelCheckpoint(
-        monitor='val_acer',
-        dirpath="./saved_checkpoint/",       
-        filename='mod_feathernet-{epoch:02d}-{val_acer:.5f}',                                             
+        monitor="val_acer",
+        dirpath=f"saved_checkpoint/{comet_logger.name}/version_{comet_logger.version}",
+        filename="mod_feathernet-{epoch:02d}-{val_acer:.5f}",
         save_top_k=3,
-        mode='min'
+        mode="min"
     )
 
     # Trainer Parameters
@@ -218,7 +256,7 @@ def main(args):
         'precision': args.precision,                                    # Precision to use for training
         'check_val_every_n_epoch': 1,                                   # No. of epochs to run validation
         'callbacks': [LearningRateMonitor(logging_interval='epoch'),    # Callbacks to use for training
-                      EarlyStopping(monitor="val_loss", patience=6),
+                      EarlyStopping(monitor="val_loss", patience=10),
                       checkpoint_callback],
         'logger': comet_logger,                                         # Logger to use for training
     }
@@ -245,18 +283,14 @@ if __name__  == "__main__":
                         help='n data loading workers, default 8')
     parser.add_argument('-db', '--dist_backend', default='ddp', type=str, help='which distributed backend to use for aggregating multi-gpu train')
 
-    # Train and Test Directory Params
+    # Dataset Base Directory
     parser.add_argument('--lcc_dir', 
                         required=True, type=str, 
                         help='Folder path to load data')
-    # parser.add_argument('--celeb_dir', 
-    #                         required=True, type=str, 
-    #                         help='Folder path to load data')
-
     
     # General Train Hyperparameters
-    parser.add_argument('--epochs', default=30, type=int, help='number of total epochs to run')
-    parser.add_argument('--batch_size', default=64, type=int, help='size of batch')
+    parser.add_argument('--epochs', default=50, type=int, help='number of total epochs to run')
+    parser.add_argument('--batch_size', default=32, type=int, help='size of batch')
     parser.add_argument('-lr', '--learning_rate', default=1e-3, type=float, help='initial learning rate')
     parser.add_argument('--grad_clip', default=0.6, type=float, help='gradient clipping value')
     parser.add_argument('--focal_gamma', default=2.0, type=float, help='gamma value for focal loss')

@@ -1,4 +1,3 @@
-import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
@@ -18,7 +17,7 @@ class MultiTaskCriterion(nn.Module):
         spoof_labels: [batch] (0 = real, 1 = spoof)
         depth_maps:  [batch, 1, H, W] (normalized depth ground truth)
     """
-    def __init__(self, C: float = 1.0, Cd: float = 0.2, alpha: float = 0.65,
+    def __init__(self, C: float = 1.0, Cd: float = 0.2, alpha: float | list[float] = 0.65,
                  gamma: float = 2.0, device: str = 'cpu'):
         super().__init__()
         self.C = C
@@ -58,19 +57,3 @@ class MultiTaskCriterion(nn.Module):
         loss = self.C * spoof_loss + self.Cd * depth_loss
 
         return spoof_loss, depth_loss, loss
-
-
-if __name__ == "__main__":
-    # Dummy outputs
-    x_live = torch.randn(32, 2)
-    x_depth = torch.randn(32, 1, 32, 32)
-    output = (x_live, x_depth)
-
-    # Dummy targets
-    spoof_labels = torch.randint(0, 2, (32,))
-    depth_map = torch.randn(32, 1, 32, 32)
-    target = (spoof_labels, depth_map)
-
-    loss_fn = MultiTaskCriterion(device='cpu')
-    spoof_loss, depth_loss, loss = loss_fn(output, target)
-    print(f"Spoof loss: {spoof_loss.item():.3f}, Depth Loss: {depth_loss.item():.3f}, Total Loss: {loss.item():.3f}")
